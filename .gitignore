@@ -172,3 +172,17 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# macOS system files
+.DS_Store
+
+# VSCode settings
+.vscode/
+
+# Output figures (e.g., generated .png, .pdf files)
+output/
+figures/
+
+# Other personal temporary files
+*.log
+*.bak
