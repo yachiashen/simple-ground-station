@@ -267,11 +267,12 @@ def ground_station_interface(
     satellite_name_query,
     observer_lat,
     observer_lon,
-    tle_source, # Was tle_source_dropdown
-    uploaded_tle_file_obj, # Was tle_upload_button
-    manual_tle_lines, # Was manual_tle_input_textbox
-    selected_map_style, # Was map_style_dropdown_folium
-    min_elevation_deg, # Was min_elevation_input
+    tle_source, # 衛星分類 (如 Active Satellites, Space Stations 等)
+    tle_mode, # TLE 取得方式 (自動下載最新 TLE, 上傳 TLE 檔案, 手動輸入 TLE)
+    uploaded_tle_file_obj, 
+    manual_tle_lines, 
+    selected_map_style, 
+    min_elevation_deg, 
     app_state_param
 ):
     status_log = ""
@@ -331,21 +332,40 @@ def ground_station_interface(
         tle_file_to_use = None
         status_message_tle = ""
 
-        if tle_source == "自動下載最新 TLE":
+        if tle_mode == "自動下載最新 TLE":
             try:
-                tle_file_to_use = tle_fetcher.download_tle_file(url=DEFAULT_TLE_URL, download_dir=os.path.join(DATA_DIR, "downloaded_tle")) # Use DATA_DIR
-                status_message_tle = f"已從網路下載最新的 TLE 檔案: {os.path.basename(tle_file_to_use)}<br>"
+                # 創建下載目錄
+                download_dir = os.path.join(DATA_DIR, "downloaded_tle")
+                os.makedirs(download_dir, exist_ok=True)
+                # 使用選擇的衛星分類下載 TLE
+                safe_source_name = "".join(c if c.isalnum() else "_" for c in tle_source).lower()
+                download_path = os.path.join(download_dir, f"{safe_source_name}.tle")
+                tle_file_to_use = tle_fetcher.download_tle_file(tle_source_name=tle_source, tle_file_path=download_path)
+                status_message_tle = f"已從網路下載 {tle_source} TLE 檔案: {os.path.basename(tle_file_to_use)}<br>"
             except tle_fetcher.TLEFetchError as e:
-                status_message_tle = f"TLE 下載失敗: {e}<br>"
-                logger.error(f"TLE download failed: {e}")
-                tle_file_to_use = app_state.get("current_tle_file", DEFAULT_TLE_FILE) # Fallback
-                status_message_tle += f"嘗試使用備用 TLE: {os.path.basename(tle_file_to_use)}<br>"
-        elif tle_source == "上傳 TLE 檔案" and uploaded_tle_file_obj is not None:
+                status_message_tle = f"下載 {tle_source} TLE 失敗: {e}<br>"
+                logger.error(f"TLE download failed for {tle_source}: {e}")
+                # 回退到本地快取
+                safe_source_name = "".join(c if c.isalnum() else "_" for c in tle_source).lower()
+                local_tle_path = os.path.join(DATA_DIR, "downloaded_tle", f"{safe_source_name}.tle")
+                if os.path.exists(local_tle_path):
+                    tle_file_to_use = local_tle_path
+                    status_message_tle += f"使用本地快取的 TLE: {os.path.basename(tle_file_to_use)}<br>"
+                else:
+                    # 最後回退：嘗試自動下載 Active Satellites
+                    try:
+                        download_path = os.path.join(DATA_DIR, "downloaded_tle", "active_satellites.tle")
+                        tle_file_to_use = tle_fetcher.download_tle_file(tle_source_name="Active Satellites", tle_file_path=download_path)
+                        status_message_tle += f"回退下載 Active Satellites TLE: {os.path.basename(tle_file_to_use)}<br>"
+                    except tle_fetcher.TLEFetchError:
+                        tle_file_to_use = None
+                        status_message_tle += "無法下載任何 TLE 檔案。<br>"
+        elif tle_mode == "上傳 TLE 檔案" and uploaded_tle_file_obj is not None:
             tle_file_to_use = uploaded_tle_file_obj.name # .name gives the temp path of the uploaded file
             status_message_tle = f"使用上傳的 TLE 檔案: {os.path.basename(tle_file_to_use)}<br>"
-        elif tle_source == "手動輸入 TLE" and manual_tle_lines and manual_tle_lines.strip():
+        elif tle_mode == "手動輸入 TLE" and manual_tle_lines and manual_tle_lines.strip():
             try:
-                with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tle", dir=DATA_DIR) as tmpfile: # Use DATA_DIR
+                with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".tle", dir=DATA_DIR) as tmpfile:
                     tmpfile.write(manual_tle_lines)
                     temp_manual_tle_path = tmpfile.name
                 tle_file_to_use = temp_manual_tle_path
@@ -353,23 +373,21 @@ def ground_station_interface(
             except Exception as e:
                 status_message_tle = f"處理手動 TLE 輸入時發生錯誤: {e}<br>"
                 logger.error(f"Error processing manual TLE: {e}")
-                tle_file_to_use = app_state.get("current_tle_file", DEFAULT_TLE_FILE)
-                status_message_tle += f"嘗試使用備用 TLE: {os.path.basename(tle_file_to_use)}<br>"
-        else: # Default or other TLE source names from get_tle_sources()
-            if tle_source and tle_source != "預設 TLE (active.tle)" and os.path.exists(os.path.join(DATA_DIR, tle_source)): # Use DATA_DIR
-                 tle_file_to_use = os.path.join(DATA_DIR, tle_source) # Use DATA_DIR
-                 status_message_tle = f"使用選擇的 TLE 檔案: {tle_source}<br>"
-            else: # Default TLE
-                default_tle_path_in_data = os.path.join(DATA_DIR, "active.tle") # Construct path using DATA_DIR
-                if os.path.exists(default_tle_path_in_data):
-                    tle_file_to_use = default_tle_path_in_data
-                    status_message_tle = f"使用預設 TLE 檔案: {os.path.basename(default_tle_path_in_data)}<br>"
-                elif os.path.exists(DEFAULT_TLE_FILE): # Fallback to DEFAULT_TLE_FILE if not in DATA_DIR/active.tle
-                    tle_file_to_use = DEFAULT_TLE_FILE
-                    status_message_tle = f"使用專案根目錄預設 TLE 檔案: {os.path.basename(DEFAULT_TLE_FILE)}<br>"
-                else: # If neither exists, this will be caught by the check below
-                    tle_file_to_use = default_tle_path_in_data # Set to expected path for error message
-                    status_message_tle = f"警告: 預設 TLE 檔案 {os.path.basename(default_tle_path_in_data)} 或 {DEFAULT_TLE_FILE} 未找到。<br>"
+                tle_file_to_use = None
+        else:
+            # 如果沒有明確選擇 TLE 模式，嘗試自動下載選定的衛星分類
+            try:
+                status_message_tle += f"嘗試自動下載 {tle_source} TLE 檔案...<br>"
+                download_dir = os.path.join(DATA_DIR, "downloaded_tle")
+                os.makedirs(download_dir, exist_ok=True)
+                safe_source_name = "".join(c if c.isalnum() else "_" for c in tle_source).lower()
+                download_path = os.path.join(download_dir, f"{safe_source_name}.tle")
+                tle_file_to_use = tle_fetcher.download_tle_file(tle_source_name=tle_source, tle_file_path=download_path)
+                status_message_tle += f"已自動下載 {tle_source} TLE 檔案: {os.path.basename(tle_file_to_use)}<br>"
+            except tle_fetcher.TLEFetchError as e:
+                status_message_tle += f"自動下載 {tle_source} TLE 失敗: {e}<br>"
+                logger.error(f"Auto-download TLE failed for {tle_source}: {e}")
+                tle_file_to_use = None
         
         status_log += status_message_tle
         if not tle_file_to_use or not os.path.exists(tle_file_to_use):
@@ -411,6 +429,30 @@ def ground_station_interface(
         # Define current_time_utc
         current_time_utc = ts.now() # ts is defined earlier in the function
         app_state["track_reference_time_utc"] = current_time_utc # Store for slider reference using the expected key name
+
+        # Check if satellite has changed to clear cached track data
+        previous_satellite_name = app_state.get('satellite_name')
+        previous_observer_lat = app_state.get('current_observer_lat')
+        previous_observer_lon = app_state.get('current_observer_lon')
+        previous_tle_file = app_state.get('current_tle_file')
+        
+        # Clear cache if any key parameters have changed
+        cache_invalidation_reasons = []
+        if previous_satellite_name and previous_satellite_name != satellite_name_query:
+            cache_invalidation_reasons.append(f"衛星變更: {previous_satellite_name} -> {satellite_name_query}")
+        if previous_observer_lat is not None and abs(previous_observer_lat - valid_observer_lat) > 0.001:
+            cache_invalidation_reasons.append(f"觀測者緯度變更: {previous_observer_lat:.3f}° -> {valid_observer_lat:.3f}°")
+        if previous_observer_lon is not None and abs(previous_observer_lon - valid_observer_lon) > 0.001:
+            cache_invalidation_reasons.append(f"觀測者經度變更: {previous_observer_lon:.3f}° -> {valid_observer_lon:.3f}°")
+        if previous_tle_file and previous_tle_file != tle_file_to_use:
+            cache_invalidation_reasons.append(f"TLE 檔案變更: {os.path.basename(previous_tle_file)} -> {os.path.basename(tle_file_to_use)}")
+        
+        if cache_invalidation_reasons:
+            # Clear cached track data to prevent old data from showing
+            if 'cached_track_data' in app_state:
+                del app_state['cached_track_data']
+                logger.info(f"Cleared cached track data due to parameter changes: {'; '.join(cache_invalidation_reasons)}")
+                status_log += f"已清除軌跡快取，原因: {'; '.join(cache_invalidation_reasons)}。<br>"
 
         # Store necessary objects in app_state for later use (e.g., by the time slider)
         app_state['current_satellite_skyfield_obj'] = target_satellite
@@ -682,12 +724,18 @@ if __name__ == "__main__":
                 observer_lat_input = gr.Number(label="觀測者緯度 (°)", value=DEFAULT_OBSERVER_LAT)
                 observer_lon_input = gr.Number(label="觀測者經度 (°)", value=DEFAULT_OBSERVER_LON)
                 
-                tle_sources = get_tle_sources()
-                tle_source_dropdown = gr.Dropdown(label="選擇 TLE 來源 (或手動輸入/上傳)", choices=tle_sources, value=tle_sources[0] if tle_sources else "Active Satellites")
+                # TLE 衛星分類選擇（只顯示衛星分類）
+                base_tle_sources = get_tle_sources()
+                tle_source_dropdown = gr.Dropdown(label="TLE 衛星分類", choices=base_tle_sources, value=base_tle_sources[0] if base_tle_sources else "Active Satellites")
                 
                 with gr.Accordion("進階 TLE 選項", open=False):
-                    tle_upload_button = gr.File(label="或上傳 TLE 檔案 (.tle)", file_types=[".tle"])
-                    manual_tle_input_textbox = gr.Textbox(label="或手動輸入 TLE (兩行格式)", lines=3, placeholder="LINE 1\\\\nLINE 2")
+                    tle_mode = gr.Radio(
+                        label="TLE 取得方式", 
+                        choices=["自動下載最新 TLE", "上傳 TLE 檔案", "手動輸入 TLE"], 
+                        value="自動下載最新 TLE"
+                    )
+                    tle_upload_button = gr.File(label="上傳 TLE 檔案 (.tle)", file_types=[".tle"], visible=False)
+                    manual_tle_input_textbox = gr.Textbox(label="手動輸入 TLE (兩行格式)", lines=3, placeholder="LINE 1\\\\nLINE 2", visible=False)
 
                 min_elevation_input = gr.Slider(label="Footprint 最小仰角 (°)", minimum=0, maximum=90, value=DEFAULT_MIN_ELEVATION_FOOTPRINT, step=1)
                 # static_map_style_dropdown = gr.Dropdown(label="地圖底圖樣式 (靜態圖)", choices=MAP_STYLE_CHOICES, value=DEFAULT_MAP_STYLE) # Removed
@@ -717,9 +765,22 @@ if __name__ == "__main__":
                 time_slider = gr.Slider(label="時間軸 (相對軌跡開始時間, 分鐘)", minimum=0, maximum=180, step=1, visible=False, interactive=True)
 
         # Event handlers
+        
+        # 控制 TLE 選項的可見性
+        def update_tle_options_visibility(tle_mode):
+            upload_visible = tle_mode == "上傳 TLE 檔案"
+            manual_visible = tle_mode == "手動輸入 TLE"
+            return gr.update(visible=upload_visible), gr.update(visible=manual_visible)
+        
+        tle_mode.change(
+            fn=update_tle_options_visibility,
+            inputs=[tle_mode],
+            outputs=[tle_upload_button, manual_tle_input_textbox]
+        )
+        
         run_button.click(
             fn=ground_station_interface,
-            inputs=[satellite_name_input, observer_lat_input, observer_lon_input, tle_source_dropdown, tle_upload_button, manual_tle_input_textbox, map_style_dropdown_folium, min_elevation_input, app_state], # Corrected order: map_style then min_elevation
+            inputs=[satellite_name_input, observer_lat_input, observer_lon_input, tle_source_dropdown, tle_mode, tle_upload_button, manual_tle_input_textbox, map_style_dropdown_folium, min_elevation_input, app_state],
             outputs=[
                 current_position_output, 
                 pass_predictions_output, 
